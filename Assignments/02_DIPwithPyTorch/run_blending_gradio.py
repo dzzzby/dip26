@@ -1,7 +1,8 @@
 import gradio as gr
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # Initialize the polygon state
 def initialize_polygon():
@@ -110,6 +111,16 @@ def create_mask_from_points(points, img_h, img_w):
     ### 0 indicates outside the Polygon.
     ### 255 indicates inside the Polygon.
 
+    if points is None or len(points) < 3:
+        return mask
+
+    # Draw polygon onto a grayscale canvas to build a binary mask.
+    canvas = Image.new('L', (img_w, img_h), 0)
+    draw = ImageDraw.Draw(canvas)
+    polygon = [tuple(map(int, p)) for p in points]
+    draw.polygon(polygon, outline=255, fill=255)
+    mask = np.array(canvas, dtype=np.uint8)
+
     return mask
 
 # Calculate the Laplacian loss between the foreground and blended image
@@ -129,6 +140,49 @@ def cal_laplacian_loss(foreground_img, foreground_mask, blended_img, background_
     loss = torch.tensor(0.0, device=foreground_img.device)
     ### FILL: Compute Laplacian Loss with https://pytorch.org/docs/stable/generated/torch.nn.functional.conv2d.html.
     ### Note: The loss is computed within the masks.
+
+    fg_mask_bool = foreground_mask[0, 0] > 0.5
+    bg_mask_bool = background_mask[0, 0] > 0.5
+    if fg_mask_bool.sum() == 0 or bg_mask_bool.sum() == 0:
+        return loss
+
+    fg_coords = torch.nonzero(fg_mask_bool, as_tuple=False)
+    bg_coords = torch.nonzero(bg_mask_bool, as_tuple=False)
+
+    shift_y = int(bg_coords[:, 0].min().item() - fg_coords[:, 0].min().item())
+    shift_x = int(bg_coords[:, 1].min().item() - fg_coords[:, 1].min().item())
+
+    _, _, h, w = foreground_img.shape
+    aligned_fg = torch.zeros_like(foreground_img)
+
+    src_y0 = max(0, -shift_y)
+    src_y1 = min(h, h - shift_y)
+    src_x0 = max(0, -shift_x)
+    src_x1 = min(w, w - shift_x)
+
+    dst_y0 = max(0, shift_y)
+    dst_y1 = min(h, h + shift_y)
+    dst_x0 = max(0, shift_x)
+    dst_x1 = min(w, w + shift_x)
+
+    if src_y1 <= src_y0 or src_x1 <= src_x0:
+        return loss
+
+    aligned_fg[:, :, dst_y0:dst_y1, dst_x0:dst_x1] = foreground_img[:, :, src_y0:src_y1, src_x0:src_x1]
+
+    lap_kernel = torch.tensor(
+        [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+        device=foreground_img.device,
+        dtype=foreground_img.dtype,
+    ).view(1, 1, 3, 3)
+    lap_kernel = lap_kernel.repeat(3, 1, 1, 1)
+
+    fg_lap = F.conv2d(aligned_fg, lap_kernel, padding=1, groups=3)
+    blended_lap = F.conv2d(blended_img, lap_kernel, padding=1, groups=3)
+
+    region = (background_mask > 0.5).expand(-1, 3, -1, -1).float()
+    diff_sq = (blended_lap - fg_lap) ** 2
+    loss = (diff_sq * region).sum() / region.sum().clamp_min(1.0)
 
     return loss
 

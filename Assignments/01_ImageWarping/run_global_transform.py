@@ -9,6 +9,9 @@ def to_3x3(affine_matrix):
 # Function to apply transformations based on user inputs
 def apply_transform(image, scale, rotation, translation_x, translation_y, flip_horizontal):
 
+    if image is None:
+        return None
+
     # Convert the image from PIL format to a NumPy array
     image = np.array(image)
     # Pad the image to avoid boundary issues
@@ -20,6 +23,46 @@ def apply_transform(image, scale, rotation, translation_x, translation_y, flip_h
 
     ### FILL: Apply Composition Transform 
     # Note: for scale and rotation, implement them around the center of the image （围绕图像中心进行放缩和旋转）
+
+    h, w = image.shape[:2]
+    center = (w / 2.0, h / 2.0)
+
+    # Scale and rotation around image center.
+    scale_matrix = cv2.getRotationMatrix2D(center, 0, scale)
+    rotation_matrix = cv2.getRotationMatrix2D(center, rotation, 1.0)
+
+    translation_matrix = np.array(
+        [[1.0, 0.0, float(translation_x)], [0.0, 1.0, float(translation_y)]],
+        dtype=np.float64,
+    )
+
+    if flip_horizontal:
+        flip_matrix = np.array(
+            [[-1.0, 0.0, w - 1.0], [0.0, 1.0, 0.0]],
+            dtype=np.float64,
+        )
+    else:
+        flip_matrix = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=np.float64,
+        )
+
+    # Apply flip -> scale -> rotate -> translate.
+    composed = (
+        to_3x3(translation_matrix)
+        @ to_3x3(rotation_matrix)
+        @ to_3x3(scale_matrix)
+        @ to_3x3(flip_matrix)
+    )
+
+    transformed_image = cv2.warpAffine(
+        image,
+        composed[:2],
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(255, 255, 255),
+    )
 
     return transformed_image
 

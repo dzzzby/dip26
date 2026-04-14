@@ -47,13 +47,101 @@ def point_guided_deformation(image, source_pts, target_pts, alpha=1.0, eps=1e-8)
         A deformed image.
     """
 
+    if image is None:
+        return None
+
     warped_image = np.array(image)
-    ### FILL: Implement MLS or RBF based image warping
+    h, w = warped_image.shape[:2]
+
+    source_pts = np.asarray(source_pts, dtype=np.float64)
+    target_pts = np.asarray(target_pts, dtype=np.float64)
+
+    n = min(len(source_pts), len(target_pts))
+    if n == 0:
+        return warped_image
+
+    source_pts = source_pts[:n]
+    target_pts = target_pts[:n]
+
+    grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+    query = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+
+    # Backward mapping: estimate where each target pixel comes from in source image.
+    if n < 3:
+        disp = source_pts - target_pts
+        diff = query[:, None, :] - target_pts[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+
+        if n == 1:
+            weighted_disp = np.repeat(disp, query.shape[0], axis=0)
+        else:
+            weights = 1.0 / np.power(dist2 + eps, max(alpha, 1e-6) / 2.0)
+            weights_sum = np.sum(weights, axis=1, keepdims=True)
+            weights = weights / np.maximum(weights_sum, eps)
+            weighted_disp = weights @ disp
+
+        mapped = query + weighted_disp
+        map_x = mapped[:, 0].reshape(h, w).astype(np.float32)
+        map_y = mapped[:, 1].reshape(h, w).astype(np.float32)
+
+        return cv2.remap(
+            warped_image,
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),
+        )
+
+    # Thin Plate Spline radial basis: U(r) = r^2 log(r^2 + eps)
+    diff_ctrl = target_pts[:, None, :] - target_pts[None, :, :]
+    r2_ctrl = np.sum(diff_ctrl * diff_ctrl, axis=2)
+    K = r2_ctrl * np.log(r2_ctrl + eps)
+
+    # alpha controls smoothness regularization.
+    reg = max(alpha, 0.0) * 1e-3
+    K = K + reg * np.eye(n, dtype=np.float64)
+
+    P = np.concatenate([np.ones((n, 1), dtype=np.float64), target_pts], axis=1)
+
+    L = np.zeros((n + 3, n + 3), dtype=np.float64)
+    L[:n, :n] = K
+    L[:n, n:] = P
+    L[n:, :n] = P.T
+
+    Yx = np.concatenate([source_pts[:, 0], np.zeros(3, dtype=np.float64)])
+    Yy = np.concatenate([source_pts[:, 1], np.zeros(3, dtype=np.float64)])
+
+    params_x = np.linalg.solve(L, Yx)
+    params_y = np.linalg.solve(L, Yy)
+
+    w_x, a_x = params_x[:n], params_x[n:]
+    w_y, a_y = params_y[:n], params_y[n:]
+
+    diff_query = query[:, None, :] - target_pts[None, :, :]
+    r2_query = np.sum(diff_query * diff_query, axis=2)
+    U_query = r2_query * np.log(r2_query + eps)
+    P_query = np.concatenate([np.ones((query.shape[0], 1), dtype=np.float64), query], axis=1)
+
+    map_x = (U_query @ w_x + P_query @ a_x).reshape(h, w).astype(np.float32)
+    map_y = (U_query @ w_y + P_query @ a_y).reshape(h, w).astype(np.float32)
+
+    warped_image = cv2.remap(
+        warped_image,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(255, 255, 255),
+    )
 
     return warped_image
 
 def run_warping():
     global points_src, points_dst, image
+
+    if image is None:
+        return None
 
     warped_image = point_guided_deformation(image, np.array(points_src), np.array(points_dst))
 
